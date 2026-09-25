@@ -23,6 +23,19 @@ Tidak ada endpoint Shopee atau kredensial SQL yang dipanggil oleh kode dalam dir
 
 Setiap perubahan stok harus menggunakan mapping yang disetujui. Produk tanpa mapping atau dengan mapping ganda masuk daftar pemeriksaan dan tidak dikirim ke Shopee.
 
+
+## Jalankan simulasi
+
+Memerlukan Node.js 22.18+ yang mendukung type stripping bawaan, atau Node.js 24. Dari root repository:
+
+```bash
+node integrations/shopee/plan.mjs \
+  integrations/shopee/examples/snapshot.json \
+  integrations/shopee/examples/mapping.json 2
+```
+
+Argumen terakhir adalah stok cadangan. Contoh menghasilkan `normalStock: 10` dari stok SID 12 dikurangi cadangan 2. Berkas contoh berisi ID fiktif; jangan gunakan untuk penulisan stok nyata. Keluar dengan kode 1 jika ada SKU yang dilewati dan kode 2 jika format input gagal. Format input mengikuti tipe `SidStock` dan `ShopeeMapping` pada `stock.ts`.
+
 ## Sebelum mengaktifkan sinkronisasi
 
 - Pastikan engine, versi, contoh **struktur** tabel/view SID (tanpa data pelanggan atau kata sandi), lokasi stok, satuan, dan aturan stok tersedia.
@@ -38,4 +51,6 @@ integrations/
   shopee/
     stock.ts              validasi snapshot dan rencana perubahan
     stock.test.ts         uji keputusan tanpa akses jaringan
+    plan.mjs              CLI simulasi stok
+    examples/             data fiktif untuk simulasi
 ```
