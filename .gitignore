@@ -37,3 +37,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .env*.local
+
+# Local encrypted Shopee sessions
+/API_shopee/.local/
+
+firebase-debug.log
+firebase-debug.*.log

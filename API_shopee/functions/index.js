@@ -1,5 +1,10 @@
 const crypto = require('crypto');
 const functions = require('firebase-functions');
+const { LocalTokenStore } = require('./local-token-store.cjs');
+const LOCAL_MODE = process.env.SHOPEE_LOCAL_MODE === 'true';
+const CLOUD_MODE = process.env.SHOPEE_TOKEN_STORAGE === 'firestore' && !LOCAL_MODE;
+const { createCloudTokenStore } = require('./cloud-token-store.cjs');
+const { refreshShopeeToken } = require('./token-refresh.cjs');
 
 const DEFAULT_SHOPEE_REGION = 'GLOBAL';
 const SUPPORTED_REGIONS = new Set(['GLOBAL', 'CHINA', 'BRAZIL', 'TEST_GLOBAL', 'TEST_CHINA']);
@@ -176,6 +181,14 @@ function parseCookies(req) {
     cookies[name] = decodeURIComponent(value);
   }
 
+  if (cookies.__session) {
+    try {
+      const bundle = JSON.parse(base64UrlDecode(cookies.__session));
+      for (const name of [STATE_COOKIE, SESSION_COOKIE]) {
+        if (typeof bundle[name] === 'string') cookies[name] = bundle[name];
+      }
+    } catch { /* Invalid cookies are treated as missing sessions. */ }
+  }
   return cookies;
 }
 
@@ -191,7 +204,18 @@ function appendSetCookie(res, cookieValue) {
 }
 
 function setCookie(res, name, value, options = {}) {
-  const parts = [`${name}=${encodeURIComponent(value)}`, `Path=${options.path || '/'}`, 'HttpOnly', 'Secure', 'SameSite=Lax'];
+  if (!LOCAL_MODE && (name === STATE_COOKIE || name === SESSION_COOKIE)) {
+    const bundle = res.shopeeCookieBundle || (res.shopeeCookieBundle = {});
+    if (options.maxAge === 0) delete bundle[name];
+    else bundle[name] = value;
+    const headers = res.getHeader('Set-Cookie');
+    const existing = Array.isArray(headers) ? headers : headers ? [headers] : [];
+    res.setHeader('Set-Cookie', existing.filter(cookie => !cookie.startsWith('__session=')));
+    return setCookie(res, '__session', base64UrlEncode(JSON.stringify(bundle)), {
+      maxAge: Object.keys(bundle).length ? SESSION_MAX_AGE_SECONDS : 0,
+    });
+  }
+  const parts = [`${name}=${encodeURIComponent(value)}`, `Path=${options.path || '/shopee'}`, 'HttpOnly', ...(LOCAL_MODE && !(process.env.SHOPEE_REDIRECT_URL || '').startsWith('https:') ? [] : ['Secure']), 'SameSite=Lax'];
 
   if (typeof options.maxAge === 'number') {
     parts.push(`Max-Age=${Math.max(0, Math.floor(options.maxAge))}`);
@@ -280,6 +304,11 @@ class RequestTokenStorage {
     this.config = config;
     this.cachedToken = null;
     this.cachedSource = null;
+    if (LOCAL_MODE || CLOUD_MODE) {
+      this.local = CLOUD_MODE ? createCloudTokenStore(config.partnerKey) : new LocalTokenStore(require('node:path').join(__dirname, '../.local/tokens'), process.env.SHOPEE_LOCAL_KEY);
+      const id = parseCookies(req)[SESSION_COOKIE];
+      this.localId = /^[a-f0-9]{64}$/.test(id || '') ? id : crypto.randomBytes(32).toString('hex');
+    }
   }
 
   async get() {
@@ -287,6 +316,15 @@ class RequestTokenStorage {
       return this.cachedToken;
     }
 
+    if (this.local) {
+      this.cachedToken = await this.local.get(this.localId);
+      if (CLOUD_MODE && this.cachedToken) {
+        this.cachedToken = await this.local.refreshDocument(this.local.document(this.localId),
+          old => refreshShopeeToken(this.config, SHOPEE_BASE_URLS[this.config.region], old));
+      }
+      this.cachedSource = this.cachedToken ? (CLOUD_MODE ? 'firestore_encrypted' : 'local_encrypted_file') : 'none';
+      return this.cachedToken;
+    }
     const cookieToken = readSessionFromCookie(this.req, this.config);
     if (cookieToken && typeof cookieToken.access_token === 'string' && typeof cookieToken.refresh_token === 'string') {
       this.cachedToken = cookieToken;
@@ -306,6 +344,13 @@ class RequestTokenStorage {
   }
 
   async store(token) {
+    if (this.local) {
+      await this.local.store(this.localId, token);
+      setCookie(this.res, SESSION_COOKIE, this.localId, { maxAge: SESSION_MAX_AGE_SECONDS });
+      this.cachedToken = token;
+      this.cachedSource = (CLOUD_MODE ? 'firestore_encrypted' : 'local_encrypted_file');
+      return;
+    }
     this.cachedToken = token;
     this.cachedSource = 'cookie';
     setCookie(this.res, SESSION_COOKIE, buildSessionToken(token, this.config), {
@@ -314,6 +359,7 @@ class RequestTokenStorage {
   }
 
   async clear() {
+    if (this.local) await this.local.clear(this.localId);
     this.cachedToken = null;
     this.cachedSource = 'none';
     clearCookie(this.res, SESSION_COOKIE);
@@ -331,7 +377,7 @@ class RequestTokenStorage {
 async function createShopeeSdk(config, tokenStorage, token) {
   const { default: ShopeeSDK } = await import('@congminh1254/shopee-sdk');
 
-  return new ShopeeSDK(
+  const sdk = new ShopeeSDK(
     {
       partner_id: config.partnerId,
       partner_key: config.partnerKey,
@@ -341,6 +387,16 @@ async function createShopeeSdk(config, tokenStorage, token) {
     },
     tokenStorage
   );
+  if (CLOUD_MODE) {
+    sdk.refreshToken = async () => {
+      const expected = tokenStorage.cachedToken?.access_token;
+      const next = await tokenStorage.local.refreshDocument(tokenStorage.local.document(tokenStorage.localId),
+        old => refreshShopeeToken(config, SHOPEE_BASE_URLS[config.region], old), expected);
+      tokenStorage.cachedToken = next;
+      return next;
+    };
+  }
+  return sdk;
 }
 
 function escapeHtml(value) {
@@ -501,7 +557,7 @@ function renderPage(res, statusCode, title, body) {
   <main>
     <header>
       <h1>${escapeHtml(title)}</h1>
-      <p>Flow ini memakai <code>shopee-sdk</code> dengan state-protected OAuth, session cookie terenkripsi, auto refresh token, dan endpoint helper untuk shop, orders, serta products.</p>
+      <p>Flow ini memakai <code>shopee-sdk</code> dengan state-protected OAuth, penyimpanan sesi server, auto refresh token, dan endpoint helper untuk shop, orders, serta products.</p>
     </header>
     <div class="content">
       ${body}
@@ -516,7 +572,7 @@ function renderHome(res, model) {
     res,
     200,
     'Shopee Open Platform Console',
-    `<div class="status info">Mulai OAuth lewat tombol di bawah. Setelah authorize sukses, endpoint helper siap dipakai tanpa menampilkan token mentah di browser.</div>
+    `${LOCAL_MODE ? setupGuide() : ""}<div class="status info">Mulai OAuth lewat tombol di bawah. Setelah authorize sukses, endpoint helper siap dipakai tanpa menampilkan token mentah di browser.</div>
     <div class="grid">
       <div class="card">
         <span class="label">Partner ID</span>
@@ -541,15 +597,16 @@ function renderHome(res, model) {
     </div>
     <div class="actions">
       <a class="button" href="${escapeHtml(model.authUrl)}" target="_blank" rel="noopener">Start OAuth</a>
-      <a class="button" href="/api/shopee-auth" target="_blank" rel="noopener" style="background:#111827;">View Auth JSON</a>
-      <a class="button" href="/api/shopee-token-status" target="_blank" rel="noopener" style="background:#374151;">Token Status</a>
+      <a class="button" href="/shopee/api/shopee-auth" target="_blank" rel="noopener" style="background:#111827;">View Auth JSON</a>
+      <a class="button" href="/shopee/api/shopee-token-status" target="_blank" rel="noopener" style="background:#374151;">Token Status</a>
     </div>
+    <form method="post" action="/shopee/api/logout"><button type="submit">Hapus sesi Shopee</button></form>
     <div class="card">
       <span class="label">API Helper Endpoints</span>
       <ul>
-        <li><code>/api/shop/info</code></li>
-        <li><code>/api/orders?page_size=20</code></li>
-        <li><code>/api/products?offset=0&page_size=20&amp;item_status=NORMAL</code></li>
+        <li><code>/shopee/api/shop/info</code></li>
+        <li><code>/shopee/api/orders?page_size=20</code></li>
+        <li><code>/shopee/api/products?offset=0&page_size=20&amp;item_status=NORMAL</code></li>
       </ul>
     </div>`
   );
@@ -560,7 +617,7 @@ function renderCallbackSuccess(res, model) {
     res,
     200,
     'Shopee OAuth Berhasil',
-    `<div class="status ok">Token sudah disimpan ke session cookie terenkripsi untuk browser ini. Token mentah sengaja tidak ditampilkan.</div>
+    `<div class="status ok">Token sudah disimpan ke penyimpanan sesi server untuk browser ini. Token mentah sengaja tidak ditampilkan.</div>
     <div class="grid">
       <div class="card">
         <span class="label">Shop ID</span>
@@ -580,9 +637,9 @@ function renderCallbackSuccess(res, model) {
       </div>
     </div>
     <div class="actions">
-      <a class="button" href="/api/shop/info" rel="noopener">Test Shop Info</a>
-      <a class="button" href="/api/orders?page_size=20" rel="noopener" style="background:#111827;">Test Orders</a>
-      <a class="button" href="/" rel="noopener" style="background:#374151;">Back to Console</a>
+      <a class="button" href="/shopee/api/shop/info" rel="noopener">Test Shop Info</a>
+      <a class="button" href="/shopee/api/orders?page_size=20" rel="noopener" style="background:#111827;">Test Orders</a>
+      <a class="button" href="/shopee" rel="noopener" style="background:#374151;">Back to Console</a>
     </div>`
   );
 }
@@ -726,6 +783,8 @@ async function handleCallback(req, res) {
   const cookieState = parseCookies(req)[STATE_COOKIE];
   let stateVerified = false;
 
+  if (!rawState || !cookieState) throw new Error('State OAuth tidak ditemukan. Mulai ulang OAuth dari console.');
+
   if (rawState) {
     if (!cookieState) {
       throw new Error('State cookie OAuth tidak ditemukan. Mulai ulang OAuth dari console.');
@@ -767,7 +826,7 @@ async function handleCallback(req, res) {
     expireIn: token.expire_in,
     expiredAt: token.expired_at ?? null,
     requestId: token.request_id ?? null,
-    tokenStored: 'session_cookie',
+    tokenStored: CLOUD_MODE ? 'firestore_encrypted' : LOCAL_MODE ? 'local_encrypted_file' : 'signed_session_cookie',
     stateVerified,
   };
 
@@ -775,7 +834,10 @@ async function handleCallback(req, res) {
     return renderJson(res, 200, payload);
   }
 
-  return renderCallbackSuccess(res, payload);
+  const successRedirectUrl = normalizeUrl(
+    readSetting('SHOPEE_SUCCESS_REDIRECT_URL', 'http://localhost:3000/')
+  );
+  return res.redirect(302, successRedirectUrl);
 }
 
 async function handleLogout(req, res) {
@@ -791,7 +853,7 @@ async function handleLogout(req, res) {
   renderPage(res, 200, 'Logout Berhasil', `
     <div class="status ok">Token session berhasil dihapus. Akun sudah di-unlink dari browser ini.</div>
     <div class="actions">
-      <a class="button" href="/" rel="noopener">Kembali ke Console</a>
+      <a class="button" href="/shopee" rel="noopener">Kembali ke Console</a>
     </div>`
   );
 }
@@ -865,12 +927,40 @@ async function handleProducts(req, res) {
     page_size: pageSize,
     update_time_from: updateTimeFrom,
     update_time_to: updateTimeTo,
-    item_status: itemStatus,
+      item_status: itemStatus,
+  });
+
+  const itemRows = data.response?.item ?? [];
+  const baseRows = [];
+  for (let start = 0; start < itemRows.length; start += 50) {
+    const itemIds = itemRows.slice(start, start + 50).map((item) => item.item_id);
+    if (!itemIds.length) continue;
+    const base = await sdk.product.getItemBaseInfo({ item_id_list: itemIds });
+    baseRows.push(...(base.response?.item_list ?? []));
+  }
+  const baseById = new Map(baseRows.map((item) => [String(item.item_id), item]));
+  const products = itemRows.map((row) => {
+    const item = baseById.get(String(row.item_id)) || row;
+    return {
+      itemId: item.item_id,
+      name: item.item_name || `Shopee item ${item.item_id}`,
+      hasModel: Boolean(item.has_model),
+      sku: item.item_sku || '',
+      status: item.item_status || row.item_status || 'NORMAL',
+      price: item.price_info?.[0]?.current_price ?? item.price_info?.[0]?.original_price ?? null,
+      stock: item.stock_info_v2?.summary_info?.total_available_stock
+        ?? item.stock_info_v2?.seller_stock?.reduce((sum, stock) => sum + (Number(stock.stock) || 0), 0)
+        ?? null,
+      image: item.image?.image_url_list?.[0] || null,
+    };
   });
 
   return renderJson(res, 200, {
     tokenSource,
     shopId: token.shop_id ?? null,
+    products,
+    hasNextPage: Boolean(data.response?.has_next_page),
+    nextOffset: data.response?.next_offset ?? null,
     query: {
       offset,
       page_size: pageSize,
@@ -880,6 +970,98 @@ async function handleProducts(req, res) {
     },
     data,
   });
+}
+
+function handleProductSyncPage(req, res) {
+  const panelOrigin = new URL(readSetting('SHOPEE_PANEL_ORIGIN', 'http://localhost:3000')).origin;
+  return renderPage(res, 200, 'Sinkron Produk Shopee', `
+    <div class="status info" id="sync-status">Mengambil produk Shopee…</div>
+    <script>
+      (async () => {
+        const status = document.getElementById('sync-status');
+        const allowedParentOrigin = ${JSON.stringify(panelOrigin)};
+        const send = (payload) => window.opener?.postMessage({ type: 'shopee-products-sync', ...payload }, allowedParentOrigin);
+        try {
+          // Referrer is intentionally disabled by handleRequest; the parent validates
+          // both this connector origin and the exact popup window before accepting data.
+          if (!window.opener) throw new Error('Buka sinkronisasi dari panel Komplace.');
+          const params = new URLSearchParams(location.search);
+          if (params.get('action') === 'update') {
+            const itemId = Number(params.get('itemId'));
+            const price = Number(params.get('price'));
+            const stock = Number(params.get('stock'));
+            const response = await fetch('/shopee/api/products/update', {
+              method: 'POST', credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ itemId, price, stock }),
+            });
+            const result = await response.json();
+            if (!response.ok || !result.ok) throw new Error(result.error || 'Shopee menolak perubahan produk.');
+            send({ ok: true, action: 'update', itemId, result });
+            status.className = 'status ok';
+            status.textContent = 'Perubahan harga dan stok berhasil dikirim ke Shopee.';
+            setTimeout(() => window.close(), 800);
+            return;
+          }
+          const response = await fetch('/shopee/api/products?offset=0&page_size=100&item_status=NORMAL,UNLIST', { credentials: 'same-origin' });
+          const result = await response.json();
+          if (!response.ok || !Array.isArray(result.products)) throw new Error(result.error || 'Gagal mengambil produk. Pastikan OAuth Shopee sudah terhubung.');
+          send({ ok: true, shopId: result.shopId, products: result.products, hasNextPage: result.hasNextPage });
+          status.className = 'status ok';
+          status.textContent = result.products.length + ' produk diterima panel. Jendela ini akan ditutup.';
+          setTimeout(() => window.close(), 800);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Sinkronisasi gagal.';
+          send({ ok: false, action: new URLSearchParams(location.search).get('action') || 'sync', error: message });
+          status.className = 'status error';
+          status.textContent = message + ' Buka halaman connector untuk menghubungkan ulang.';
+        }
+      })();
+    </script>`);
+}
+
+async function handleUpdateProduct(req, res) {
+  const config = loadShopeeConfig();
+  if (req.method !== 'POST' || req.headers.origin !== new URL(config.redirectUrl).origin) {
+    return renderJson(res, 403, { ok: false, error: 'Permintaan update harus berasal dari connector Shopee.' });
+  }
+  const { sdk, token } = await createSdkContext(req, res);
+  requireToken(token);
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const itemId = parseOptionalPositiveInt(body.itemId, 'itemId');
+  const price = parseOptionalInteger(body.price, 'price');
+  const stock = parseOptionalInteger(body.stock, 'stock');
+  if (!itemId || price === undefined || price < 1 || stock === undefined || stock < 0) {
+    return renderJson(res, 400, { ok: false, error: 'ID produk, harga positif, dan stok non-negatif wajib diisi.' });
+  }
+
+  const baseInfo = await sdk.product.getItemBaseInfo({ item_id_list: [itemId] });
+  const item = baseInfo.response?.item_list?.[0];
+  if (!item) return renderJson(res, 404, { ok: false, error: 'Produk tidak ditemukan di toko Shopee.' });
+  if (item.has_model) return renderJson(res, 409, { ok: false, error: 'Produk bervariasi belum bisa diedit dari panel. Edit variasinya langsung di Shopee.' });
+
+  let locationId = item.stock_info_v2?.seller_stock?.find((entry) => entry.location_id)?.location_id;
+  if (!locationId) {
+    const warehouses = await sdk.shop.getWarehouseDetail({ warehouse_type: 1 });
+    locationId = warehouses.response?.find((entry) => entry.location_id)?.location_id;
+  }
+  if (!locationId) return renderJson(res, 409, { ok: false, error: 'Lokasi gudang Shopee tidak ditemukan; stok tidak diubah.' });
+
+  const [priceResult, stockResult] = await Promise.all([
+    sdk.product.updatePrice({ item_id: itemId, price_list: [{ model_id: 0, original_price: price }] }),
+    sdk.product.updateStock({ item_id: itemId, stock_list: [{ model_id: 0, seller_stock: [{ location_id: locationId, stock }] }] }),
+  ]);
+  const priceOk = !priceResult.error && (priceResult.response?.success_list || []).some((entry) => entry.model_id === 0);
+  const stockOk = !stockResult.error && (stockResult.response?.success_list || []).some((entry) => entry.model_id === 0);
+  if (!priceOk || !stockOk) {
+    return renderJson(res, 502, {
+      ok: false,
+      error: 'Sebagian perubahan ditolak Shopee. Periksa hasilnya sebelum mencoba lagi.',
+      updated: { price: priceOk, stock: stockOk },
+      failures: { price: priceResult.response?.failure_list ?? [], stock: stockResult.response?.failure_list ?? [] },
+    });
+  }
+  return renderJson(res, 200, { ok: true, shopId: token.shop_id, itemId, updated: { price, stock } });
 }
 
 async function handleLogisticsChannels(req, res) {
@@ -989,9 +1171,34 @@ async function handleAddSampleProducts(req, res) {
   });
 }
 
+function normalizeRequestPath(req) {
+  const pathname = (req.path || req.originalUrl || req.url || '/').split('?')[0];
+  return pathname.replace(/^\/shopee(?=\/|$)/, '') || '/';
+}
+function setupGuide() {
+  return `<div class="card"><h2>Persiapan middleware lokal</h2>
+  <ol><li>Siapkan aplikasi dan akun toko di Shopee Open Platform.</li>
+  <li>Salin <code>API_shopee/.env.example</code> menjadi <code>API_shopee/.env.local</code>.</li>
+  <li>Isi <code>SHOPEE_PARTNER_ID</code> dan <code>SHOPEE_PARTNER_KEY</code> dari aplikasi yang sama.</li>
+  <li>Pilih <code>SHOPEE_REGION</code>: GLOBAL untuk produksi atau TEST_GLOBAL untuk sandbox sesuai aplikasi.</li>
+  <li>Isi <code>SHOPEE_REDIRECT_URL</code> dengan URL callback yang terdaftar, berakhiran <code>/shopee/callback</code>. Untuk callback HTTPS gunakan alamat penerusan port 3000 yang dapat diakses browser.</li>
+  <li>Buat <code>SHOPEE_LOCAL_KEY</code> menggunakan <code>node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"</code>.</li>
+  <li>Restart <code>npm run shopee:dev</code>, buka halaman ini, lalu Start OAuth dan izinkan akses toko.</li>
+  <li>Periksa Token Status, kemudian Shop Info. Access token, refresh token, Shop ID, dan masa berlaku diisi otomatis dari OAuth.</li></ol>
+  <p>Token disimpan terenkripsi di <code>API_shopee/.local/tokens</code>; browser hanya menyimpan ID sesi HttpOnly. Simpan kunci lokal yang sama agar token tetap dapat dibaca setelah restart. Menghapus cookie mengharuskan OAuth ulang. Penyimpanan token belum membuktikan akses API live.</p>
+  <a href="/shopee/api/shop/info">Shop Info</a></div>`;
+}
+
 async function handleRequest(req, res) {
   try {
-    const requestPath = (req.path || req.originalUrl || req.url || '/').split('?')[0];
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    const incoming = parseCookies(req);
+    res.shopeeCookieBundle = Object.fromEntries([STATE_COOKIE, SESSION_COOKIE].filter(name => incoming[name]).map(name => [name, incoming[name]]));
+    const requestPath = normalizeRequestPath(req);
+    if (LOCAL_MODE && requestPath === '/' && (!readSetting('SHOPEE_PARTNER_ID') || !readSetting('SHOPEE_PARTNER_KEY') || !readSetting('SHOPEE_LOCAL_KEY'))) {
+      return renderPage(res, 200, 'Persiapan Shopee Lokal', setupGuide());
+    }
 
     if (requestPath === '/api/shopee-auth') {
       return await handleAuthApi(req, res);
@@ -1013,11 +1220,19 @@ async function handleRequest(req, res) {
       return await handleProducts(req, res);
     }
 
+    if (requestPath === '/api/products/update') {
+      return await handleUpdateProduct(req, res);
+    }
+
+    if (requestPath === '/sync-products') {
+      return handleProductSyncPage(req, res);
+    }
+
     if (requestPath === '/api/logistics/channels') {
       return await handleLogisticsChannels(req, res);
     }
 
-    if (requestPath === '/api/products/add-sample-5') {
+    if (requestPath === '/api/products/add-sample-5' && LOCAL_MODE) {
       return await handleAddSampleProducts(req, res);
     }
 
@@ -1026,6 +1241,10 @@ async function handleRequest(req, res) {
     }
 
     if (requestPath === '/api/logout') {
+      const expectedOrigin = new URL(loadShopeeConfig().redirectUrl).origin;
+      if (req.method !== 'POST' || req.headers.origin !== expectedOrigin) {
+        return renderJson(res, 403, { error: 'Logout harus POST dari halaman konektor.' });
+      }
       return await handleLogout(req, res);
     }
 
@@ -1048,4 +1267,19 @@ async function handleRequest(req, res) {
   }
 }
 
-exports.shopeeConsole = functions.https.onRequest(handleRequest);
+exports.shopeeConsole = functions.https.onRequest(
+  CLOUD_MODE ? { serviceAccount: 'shopee-connector@thejagosnackfood-420.iam.gserviceaccount.com' } : {},
+  handleRequest
+);
+
+exports.shopeeTokenRefresh = require('firebase-functions/v2/scheduler').onSchedule({
+  schedule: 'every 5 minutes', timeZone: 'Etc/UTC', region: 'us-central1',
+  serviceAccount: 'shopee-connector@thejagosnackfood-420.iam.gserviceaccount.com',
+  timeoutSeconds: 540, maxInstances: 1, concurrency: 1,
+}, async () => {
+  const config = loadShopeeConfig();
+  const store = createCloudTokenStore(config.partnerKey);
+  const result = await store.refreshDue(old => refreshShopeeToken(config, SHOPEE_BASE_URLS[config.region], old));
+  console.log('Shopee scheduled refresh', result);
+  if (result.failed) throw new Error('Sebagian token gagal diperbarui; akan dicoba lagi pada jadwal berikutnya.');
+});

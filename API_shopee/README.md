@@ -15,7 +15,7 @@ Firebase Function ini menjadi backend aman untuk Shopee Open API V2. Secret sepe
    `SHOPEE_REDIRECT_URL`, misalnya:
 
 ```txt
-https://dasboardmarket.firebaseapp.com/shopee/callback
+https://thejagosidconnect.firebaseapp.com/shopee/callback
 ```
 
 Untuk sandbox, salin `.env.sandbox.example` menjadi `.env.sandbox`.
@@ -61,7 +61,7 @@ npm run deploy -- --project=dasboardmarket --only=functions
 Untuk menampilkan console di sub halaman:
 
 ```txt
-https://dasboardmarket.firebaseapp.com/shopee
+https://thejagosidconnect.firebaseapp.com/shopee
 ```
 
 gabungkan rewrite berikut ke `firebase.json` hosting utama:
@@ -135,3 +135,11 @@ Script Python juga dapat menguji server nyata:
 ```sh
 python3 "sample database csv/test_ginee_api.py" --connector-url http://127.0.0.1:3087/shopee
 ```
+
+## Middleware lokal
+
+Panduan pengisian konfigurasi, OAuth, dan penyimpanan token: [LOCAL_SETUP.md](LOCAL_SETUP.md). Dari root jalankan `npm run shopee:dev` bersama `npm run dev`, lalu buka `/shopee`.
+
+## Konektor Firebase
+
+Domain khusus `thejagosidconnect.firebaseapp.com`: lihat [FIREBASE_SETUP.md](FIREBASE_SETUP.md) untuk callback, penyimpanan Firestore, dan deployment khusus site.

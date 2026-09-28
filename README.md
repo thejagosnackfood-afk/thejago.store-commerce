@@ -21,7 +21,7 @@ pnpm start
 Jika URL Firebase Shopee berbeda dari default, set env publik panel:
 
 ```sh
-NEXT_PUBLIC_SHOPEE_CONSOLE_URL=https://dasboardmarket.firebaseapp.com/shopee
+NEXT_PUBLIC_SHOPEE_CONSOLE_URL=https://thejagosidconnect.firebaseapp.com/shopee
 ```
 
 ## Halaman
@@ -70,5 +70,5 @@ Tidak ada login, API marketplace, scraper, publikasi produk, atau penjadwalan na
 Folder `API_shopee` berisi connector server-side untuk Shopee Open API V2:
 OAuth, callback, token session, cek koneksi, shop info, order, product, dan
 logistics channel. Mulai dari `API_shopee/README.md`, lalu buka console Firebase
-di `https://dasboardmarket.firebaseapp.com/shopee`. Default deploy connector
+di `https://thejagosidconnect.firebaseapp.com/shopee`. Default deploy connector
 hanya mengirim Functions agar hosting utama tidak terganggu.

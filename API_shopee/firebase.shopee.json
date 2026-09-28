@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "source": "functions",
+    "ignore": ["node_modules", ".git", "firebase-debug.log", "firebase-debug.*.log", "*.test.cjs", "dev.cjs"]
+  },
+  "hosting": {
+    "site": "thejagosidconnect",
+    "public": "public",
+    "ignore": ["firebase.shopee.json", "**/.*", "**/node_modules/**"],
+    "redirects": [{ "source": "/", "destination": "/shopee", "type": 302 }],
+    "rewrites": [
+      { "source": "/shopee", "function": { "functionId": "shopeeConsole", "region": "us-central1" } },
+      { "source": "/shopee/**", "function": { "functionId": "shopeeConsole", "region": "us-central1" } }
+    ]
+  }
+}
