@@ -4,6 +4,8 @@ firebase-debug.log
 .env
 .env.sandbox
 .env.local
+# Firebase service-account private key
+thejagosnackfood-420-148835de6ae0.json
 functions/node_modules/
 functions/.env*
 functions/.runtimeconfig.json
