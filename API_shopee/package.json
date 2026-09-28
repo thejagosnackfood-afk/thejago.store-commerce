@@ -1,0 +1,10 @@
+{
+  "name": "api-shopee",
+  "private": true,
+  "scripts": {
+    "deploy": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\deploy.ps1",
+    "deploy:sandbox": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\deploy.ps1 -EnvFile .env.sandbox",
+    "deploy:hosting": "firebase deploy --only hosting --project thejagosnackfood-420",
+    "deploy:functions": "firebase deploy --only functions --project thejagosnackfood-420"
+  }
+}

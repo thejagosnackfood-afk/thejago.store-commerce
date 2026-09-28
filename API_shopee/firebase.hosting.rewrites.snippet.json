@@ -1,0 +1,14 @@
+[
+  {
+    "source": "/api/webhook/shopee",
+    "function": "shopeeConsole"
+  },
+  {
+    "source": "/shopee",
+    "function": "shopeeConsole"
+  },
+  {
+    "source": "/shopee/**",
+    "function": "shopeeConsole"
+  }
+]

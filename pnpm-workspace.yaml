@@ -1,0 +1,3 @@
+# Halaman ini tidak menggunakan pemrosesan gambar Sharp.
+allowBuilds:
+  sharp: false

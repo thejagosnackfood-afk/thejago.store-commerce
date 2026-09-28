@@ -1,0 +1,23 @@
+{
+  "functions": {
+    "source": "functions"
+  },
+  "hosting": {
+    "public": "public",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/api/shopee-auth",
+        "function": "shopeeConsole"
+      },
+      {
+        "source": "**",
+        "function": "shopeeConsole"
+      }
+    ]
+  }
+}
