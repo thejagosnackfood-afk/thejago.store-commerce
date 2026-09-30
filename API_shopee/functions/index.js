@@ -311,14 +311,14 @@ class RequestTokenStorage {
     }
   }
 
-  async get() {
+  async get({ refresh = true } = {}) {
     if (this.cachedToken) {
       return this.cachedToken;
     }
 
     if (this.local) {
       this.cachedToken = await this.local.get(this.localId);
-      if (CLOUD_MODE && this.cachedToken) {
+      if (CLOUD_MODE && this.cachedToken && refresh) {
         this.cachedToken = await this.local.refreshDocument(this.local.document(this.localId),
           old => refreshShopeeToken(this.config, SHOPEE_BASE_URLS[this.config.region], old));
       }
@@ -365,8 +365,8 @@ class RequestTokenStorage {
     clearCookie(this.res, SESSION_COOKIE);
   }
 
-  async getStatus() {
-    const token = await this.get();
+  async getStatus(options) {
+    const token = await this.get(options);
     return {
       source: this.cachedSource || 'none',
       token,
@@ -727,7 +727,11 @@ function buildSampleProduct(index, options) {
 async function buildAuthModel(req, res) {
   const config = loadShopeeConfig();
   const tokenStorage = new RequestTokenStorage(req, res, config);
-  const status = await tokenStorage.getStatus();
+  // Reauthorization must remain available even when the existing token cannot refresh.
+  // This summary describes stored credentials, not a verified live connection.
+  let status = { token: null, source: 'none' };
+  try { status = await tokenStorage.getStatus({ refresh: false }); }
+  catch { /* A failed session read must not prevent starting a new OAuth flow. */ }
   const sdk = await createShopeeSdk(config, tokenStorage, status.token);
   const state = buildStateToken(config);
 
@@ -1196,6 +1200,9 @@ async function handleRequest(req, res) {
     const incoming = parseCookies(req);
     res.shopeeCookieBundle = Object.fromEntries([STATE_COOKIE, SESSION_COOKIE].filter(name => incoming[name]).map(name => [name, incoming[name]]));
     const requestPath = normalizeRequestPath(req);
+    if (requestPath.startsWith('/api/dashboard/')) {
+      return await require('./dashboard-api.cjs').handleDashboard(req, res, requestPath.slice('/api/dashboard'.length));
+    }
     if (LOCAL_MODE && requestPath === '/' && (!readSetting('SHOPEE_PARTNER_ID') || !readSetting('SHOPEE_PARTNER_KEY') || !readSetting('SHOPEE_LOCAL_KEY'))) {
       return renderPage(res, 200, 'Persiapan Shopee Lokal', setupGuide());
     }

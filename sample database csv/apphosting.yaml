@@ -1,0 +1,35 @@
+runtime: nodejs20
+env:
+  # === CONFIGURASI DATABASE & AUTH (SUPABASE) ===
+  - variable: SUPABASE_URL
+    value: "https://ueefwnfinpjvtcyieqoy.supabase.co"
+  - variable: NEXT_PUBLIC_SUPABASE_URL
+    value: "https://ueefwnfinpjvtcyieqoy.supabase.co"
+  - variable: NEXT_PUBLIC_SUPABASE_ANON_KEY
+    value: "sb_publishable_J1tnoS2eiH4FHo9cSwid8A_PINm20qt"
+
+  # === CONFIGURASI WHATSAPP API (RAILWAY) ===
+  - variable: WHATSAPP_API_BASE
+    value: "https://discerning-peace-production-15a6.up.railway.app"
+  - variable: ADMIN_WHATSAPP_NUMBER
+    value: "082110202044"
+  - variable: FONNTE_TOKEN
+    value: "Ztd63vNBVrRpMkeaLXex"
+
+  # === CONFIGURASI SHIPPING (BITESHIP) ===
+  # Ganti value ini di dashboard Firebase/Secret Manager untuk keamanan maksimal
+  - variable: BITESHIP_API_KEY
+    value: "biteship_test.eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoiSkFHTyIsInVzZXJJZCI6IjY5YTRhYzdkYTlhYzBkZjYxMmNlNTQwYiIsImlhdCI6MTc3NzI0MzI3MH0.UbkGYtbXxqYxH_4f6vDIo4kW7iT8bgXYHgo7G6RNcAY"
+
+  # === CONFIGURASI PEMBAYARAN (MIDTRANS) ===
+  - variable: MIDTRANS_SERVER_KEY
+    value: "SB-Mid-server-xW0M1Z2Y3X4..."
+  - variable: NEXT_PUBLIC_MIDTRANS_CLIENT_KEY
+    value: "SB-Mid-client-A1B2C3D4..."
+  - variable: NEXT_PUBLIC_BASE_URL
+    value: "https://thejago.store"
+
+runConfig:
+  memoryMiB: 512
+  minInstances: 0
+  maxInstances: 2

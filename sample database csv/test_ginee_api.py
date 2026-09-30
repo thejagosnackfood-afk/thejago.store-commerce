@@ -133,7 +133,7 @@ def get_ginee_order_items(order_ids=None, external_order_ids=None, shop_id=None,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test Ginee OMS API v3: item pesanan.")
-    parser.add_argument('--connector-url', help='URL halaman connector, misalnya https://dasboardmarket.firebaseapp.com/shopee')
+    parser.add_argument('--connector-url', help='URL halaman connector, misalnya https://thejagosidconnect.firebaseapp.com/shopee')
     ids = parser.add_mutually_exclusive_group()
     ids.add_argument('--order-ids', nargs='+', help='ID pesanan internal Ginee')
     ids.add_argument('--external-order-ids', nargs='+', help='ID pesanan eksternal/marketplace')

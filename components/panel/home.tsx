@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "./icon";
+import { onlineEnabled } from "../../lib/online-dashboard";
+import CommerceOverview from "./commerce-overview";
 
 const totals = [
   ["Nilai Total Pesanan", "Rp 8.312.155"],
@@ -30,6 +32,9 @@ const shortcuts = [
 ];
 
 export default function Home() {
+  return onlineEnabled ? <CommerceOverview /> : <DemoHome />;
+}
+function DemoHome() {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [marketplace, setMarketplace] = useState("Semua Marketplace");

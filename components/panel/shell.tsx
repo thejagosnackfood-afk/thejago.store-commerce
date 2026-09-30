@@ -5,9 +5,13 @@ import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import { Icon } from "./icon";
 import { Modal } from "./ui";
+import CommerceShell from "./commerce-shell";
+import { onlineEnabled } from '../../lib/online-dashboard';
+import { useOnlineAccount } from './online-provider';
 
 export const navigation = [
   { title: "Produk", items: [["Produk Saya", "mp/shopee", "box"]] },
+  ...(onlineEnabled ? [{ title: "Pengiriman", items: [["Pesanan Shopee", "orders", "order"], ["Jasa Kirim", "logistics", "box"]] }] : []),
   {
     title: "Master Produk",
     items: [
@@ -28,6 +32,10 @@ export const navigation = [
   },
 ];
 export default function Shell({ children }: { children: ReactNode }) {
+  return onlineEnabled ? <CommerceShell>{children}</CommerceShell> : <LegacyShell>{children}</LegacyShell>;
+}
+function LegacyShell({ children }: { children: ReactNode }) {
+  const account = useOnlineAccount();
   const pathname = usePathname();
   const home = pathname === "/" || pathname === "/panel/home";
   const [banner, setBanner] = useState(true);
@@ -83,7 +91,8 @@ export default function Shell({ children }: { children: ReactNode }) {
           >
             Produk
           </Link>
-          {["Chat", "Order", "Kolkit", "Affiliate", "Pusat Bantuan"].map(
+          {onlineEnabled && <Link href="/panel/product/orders">Pengiriman</Link>}
+          {["Chat", ...(onlineEnabled ? [] : ["Order"]), "Kolkit", "Affiliate", "Pusat Bantuan"].map(
             (n) => (
               <button key={n} onClick={() => setInfo(n)}>
                 {n}
@@ -101,9 +110,9 @@ export default function Shell({ children }: { children: ReactNode }) {
             <Icon name="bell" />
             <b>5</b>
           </button>
-          <button className="account" onClick={() => setInfo("Profil akun")}>
+          <button className="account" onClick={() => onlineEnabled ? account.logout() : setInfo("Profil akun")}>
             <span className="avatar">M</span>
-            <span>miftah</span>
+            <span>{onlineEnabled ? 'Keluar' : 'miftah'}</span>
           </button>
         </div>
       </header>
@@ -155,7 +164,7 @@ export default function Shell({ children }: { children: ReactNode }) {
                   ))}
                 </section>
               ))}
-              <small className="sidebar-note">Mode demo · data lokal</small>
+              <small className="sidebar-note">{onlineEnabled ? 'Produk & pengiriman: Shopee live. Tools lain: lokal.' : 'Mode demo · data lokal'}</small>
             </aside>
           </>
         )}

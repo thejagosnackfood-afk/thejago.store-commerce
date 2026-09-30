@@ -7,9 +7,13 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.cjs"
+    "test": "node --test tests/*.test.cjs",
+    "shopee:dev": "node API_shopee/functions/dev.cjs",
+    "shopee:test": "node --test API_shopee/functions/local-token-store.test.cjs API_shopee/functions/cloud-token-store.test.cjs API_shopee/functions/session.test.cjs API_shopee/functions/token-refresh.test.cjs API_shopee/functions/dashboard-auth.test.cjs API_shopee/functions/oauth-recovery.test.cjs API_shopee/functions/master-stock.test.cjs",
+    "build:dashboard": "node scripts/build-dashboard.cjs"
   },
   "dependencies": {
+    "firebase": "^12.19.0",
     "next": "15.6.0-canary.60",
     "react": "19.0.0",
     "react-dom": "19.0.0"

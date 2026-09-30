@@ -10,6 +10,7 @@ export type Product = {
   shop: string;
   status: string;
   image?: string;
+  shopeeHasModel?: boolean;
 };
 export type StockChange = {
   id: string;

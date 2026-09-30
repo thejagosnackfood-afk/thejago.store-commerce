@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { usePanel } from "./store";
 import {
   Modal,
@@ -14,8 +14,17 @@ import {
 import { type Product } from "../../lib/panel-data";
 import { readStockChanges, stockCsv } from "../../lib/stock-csv";
 
+const shopeeConsoleUrl =
+  process.env.NEXT_PUBLIC_SHOPEE_CONSOLE_URL ||
+  "https://thejagosidconnect.firebaseapp.com/shopee";
+
 type Mode = "products" | "master" | "stock";
+import LiveCommerce from './live-commerce';
+import { onlineEnabled } from '../../lib/online-dashboard';
 export default function Products({ mode }: { mode: Mode }) {
+  return onlineEnabled && mode !== 'master' ? <LiveCommerce /> : <LocalProducts mode={mode} />;
+}
+function LocalProducts({ mode }: { mode: Mode }) {
   const { state, update, ready, storageError } = usePanel();
   const [query, setQuery] = useState("");
   const [shop, setShop] = useState("Semua");
@@ -30,6 +39,10 @@ export default function Products({ mode }: { mode: Mode }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [importText, setImportText] = useState("");
+  const syncWindow = useRef<Window | null>(null);
+  const pendingEdit = useRef<Product | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const editingShopeeProduct = Boolean(editing?.id.startsWith("shopee-"));
   const source = mode === "stock" ? state.stocks : state.products;
   const filtered = source.filter(
     (p) =>
@@ -51,6 +64,95 @@ export default function Products({ mode }: { mode: Mode }) {
     setQuery(s);
     setPage(1);
   };
+  function commitValue(value: Product, successMessage: string) {
+    update((current) => {
+      const key = mode === "stock" ? "stocks" : "products";
+      const collection = current[key];
+      const previous = collection.find((product) => product.id === value.id);
+      return {
+        ...current,
+        [key]: previous
+          ? collection.map((product) => product.id === value.id ? value : product)
+          : [value, ...collection],
+        history: previous && previous.stock !== value.stock
+          ? [{
+              id: crypto.randomUUID(), name: value.name, sku: value.sku,
+              delta: value.stock - previous.stock, stock: value.stock,
+              time: new Date().toISOString(),
+            }, ...current.history]
+          : current.history,
+      };
+    });
+    setEditing(null);
+    setMessage(successMessage);
+  }
+  useEffect(() => {
+    function receiveShopeeProducts(event: MessageEvent) {
+      if (
+        event.origin !== new URL(shopeeConsoleUrl).origin ||
+        event.source !== syncWindow.current ||
+        event.data?.type !== "shopee-products-sync"
+      ) return;
+      syncWindow.current = null;
+      setSyncing(false);
+      if (!event.data.ok) {
+        pendingEdit.current = null;
+        setError(event.data.error || "Gagal mengambil produk Shopee.");
+        return;
+      }
+      if (event.data.action === "update") {
+        const value = pendingEdit.current;
+        pendingEdit.current = null;
+        if (!value) {
+          setError("Respons update Shopee tidak cocok dengan produk yang sedang diedit.");
+          return;
+        }
+        commitValue(value, "Harga dan stok berhasil diperbarui langsung di Shopee.");
+        setError("");
+        return;
+      }
+      const shopId = String(event.data.shopId || "unknown");
+      const shopName = `Shopee ${shopId}`;
+      const incoming: Product[] = (Array.isArray(event.data.products) ? event.data.products : [])
+        .filter((item: any) => item && Number.isFinite(Number(item.itemId)) && typeof item.name === "string")
+        .map((item: any) => ({
+          id: `shopee-${shopId}-${item.itemId}`,
+          name: item.name,
+          variant: "Original",
+          sku: item.sku || `SHOPEE-${item.itemId}`,
+          stock: Number.isFinite(Number(item.stock)) ? Number(item.stock) : 0,
+          price: Number.isFinite(Number(item.price)) ? Number(item.price) : 0,
+          shop: shopName,
+          status: item.status === "NORMAL" ? "Aktif" : item.status === "UNLIST" ? "Draft" : "Diarsipkan",
+          shopeeHasModel: Boolean(item.hasModel),
+        }));
+      update((current) => ({
+        ...current,
+        products: [
+          ...current.products.filter((product) => !product.id.startsWith(`shopee-${shopId}-`)),
+          ...incoming,
+        ],
+      }));
+      setShop(shopName);
+      setPage(1);
+      setDialog("");
+      setError("");
+      setMessage(`${incoming.length} produk Shopee disinkronkan ke daftar lokal${event.data.hasNextPage ? " (halaman pertama, maksimal 100 produk)" : ""}.`);
+    }
+    window.addEventListener("message", receiveShopeeProducts);
+    return () => window.removeEventListener("message", receiveShopeeProducts);
+  }, [update, mode]);
+  function syncShopeeProducts() {
+    setError("");
+    setSyncing(true);
+    const popup = window.open(`${shopeeConsoleUrl}/sync-products`, "shopee-product-sync", "popup,width=520,height=360");
+    if (!popup) {
+      setSyncing(false);
+      setError("Popup diblokir browser. Izinkan popup untuk melanjutkan sinkronisasi.");
+      return;
+    }
+    syncWindow.current = popup;
+  }
   function openEdit(p: Product) {
     setEditing({ ...p });
     setError("");
@@ -68,11 +170,10 @@ export default function Products({ mode }: { mode: Mode }) {
       setError("Nama, SKU, harga, dan stok harus valid.");
       return;
     }
-    if (source.some((p) => p.id !== editing.id && p.sku === editing.sku)) {
+    if (!editing.id.startsWith("shopee-") && source.some((p) => p.id !== editing.id && p.sku === editing.sku)) {
       setError("SKU sudah digunakan.");
       return;
     }
-    const previous = source.find((p) => p.id === editing.id);
     const value = {
       ...editing,
       status:
@@ -82,28 +183,25 @@ export default function Products({ mode }: { mode: Mode }) {
             ? "Aktif"
             : editing.status,
     };
-    update((s) => ({
-      ...s,
-      [mode === "stock" ? "stocks" : "products"]: previous
-        ? source.map((p) => (p.id === value.id ? value : p))
-        : [value, ...source],
-      history:
-        previous && previous.stock !== value.stock
-          ? [
-              {
-                id: crypto.randomUUID(),
-                name: value.name,
-                sku: value.sku,
-                delta: value.stock - previous.stock,
-                stock: value.stock,
-                time: new Date().toISOString(),
-              },
-              ...s.history,
-            ]
-          : s.history,
-    }));
-    setEditing(null);
-    setMessage("Perubahan disimpan di browser ini.");
+    if (value.id.startsWith("shopee-")) {
+      if (value.shopeeHasModel) {
+        setError("Produk bervariasi belum didukung untuk edit langsung. Edit variasinya di Shopee.");
+        return;
+      }
+      const itemId = value.id.split("-").pop();
+      const params = new URLSearchParams({ action: "update", itemId: itemId || "", price: String(value.price), stock: String(value.stock) });
+      const popup = window.open(`${shopeeConsoleUrl}/sync-products?${params}`, "shopee-product-sync", "popup,width=520,height=360");
+      if (!popup) {
+        setError("Popup diblokir browser. Izinkan popup untuk mengirim perubahan ke Shopee.");
+        return;
+      }
+      pendingEdit.current = value;
+      syncWindow.current = popup;
+      setSyncing(true);
+      setError("");
+      return;
+    }
+    commitValue(value, "Perubahan disimpan di browser ini.");
   }
   function exportStock() {
     const blob = new Blob(
@@ -182,6 +280,7 @@ export default function Products({ mode }: { mode: Mode }) {
       {mode === "products" && (
         <StoreTabs
           value={shop}
+          extraStores={state.products.filter((product) => product.id.startsWith("shopee-")).map((product) => product.shop)}
           onChange={(s) => {
             setShop(s);
             setPage(1);
@@ -503,7 +602,7 @@ export default function Products({ mode }: { mode: Mode }) {
           ? "Penyimpanan browser tidak tersedia; perubahan hanya berlaku selama sesi ini."
           : mode === "stock"
             ? "Data awal dari list-komplace-stock.xlsx. Perubahan disimpan lokal di browser."
-            : "Data produk contoh dari rekaman. Perubahan disimpan lokal di browser."}
+            : "Produk contoh diedit lokal. Produk hasil sinkron Shopee mengirim perubahan harga dan stok langsung saat disimpan."}
         {!ready && " Memuat…"}
       </p>
       {editing && !dialog && (
@@ -518,12 +617,18 @@ export default function Products({ mode }: { mode: Mode }) {
               save();
             }}
           >
+            {editingShopeeProduct && (
+              <Notice>
+                Perubahan harga dan stok akan dikirim langsung ke Shopee setelah disimpan.
+                {editing?.shopeeHasModel && " Produk ini memiliki variasi dan belum bisa diedit dari panel."}
+              </Notice>
+            )}
             <label>
               Nama produk
               <input
                 required
                 value={editing.name}
-                disabled={mode === "stock"}
+                disabled={mode === "stock" || editingShopeeProduct}
                 onChange={(e) =>
                   setEditing({ ...editing, name: e.target.value })
                 }
@@ -534,7 +639,7 @@ export default function Products({ mode }: { mode: Mode }) {
               <input
                 required
                 value={editing.sku}
-                disabled={mode === "stock"}
+                disabled={mode === "stock" || editingShopeeProduct}
                 onChange={(e) =>
                   setEditing({ ...editing, sku: e.target.value })
                 }
@@ -548,6 +653,7 @@ export default function Products({ mode }: { mode: Mode }) {
                   min="0"
                   step="1"
                   required
+                  disabled={Boolean(editingShopeeProduct && editing.shopeeHasModel) || syncing}
                   value={Number.isNaN(editing.stock) ? "" : editing.stock}
                   onChange={(e) =>
                     setEditing({
@@ -563,8 +669,9 @@ export default function Products({ mode }: { mode: Mode }) {
                   Harga (Rp)
                   <input
                     type="number"
-                    min="0"
+                    min={editingShopeeProduct ? "1" : "0"}
                     required
+                    disabled={Boolean(editingShopeeProduct && editing.shopeeHasModel) || syncing}
                     value={editing.price}
                     onChange={(e) =>
                       setEditing({ ...editing, price: Number(e.target.value) })
@@ -578,6 +685,7 @@ export default function Products({ mode }: { mode: Mode }) {
                 Status
                 <select
                   value={editing.status}
+                  disabled={editingShopeeProduct}
                   onChange={(e) =>
                     setEditing({ ...editing, status: e.target.value })
                   }
@@ -601,7 +709,9 @@ export default function Products({ mode }: { mode: Mode }) {
               >
                 Batal
               </button>
-              <button className="primary">Simpan</button>
+              <button className="primary" disabled={syncing || Boolean(editingShopeeProduct && editing.shopeeHasModel)}>
+                {syncing ? "Mengirim ke Shopee…" : editingShopeeProduct ? "Simpan ke Shopee" : "Simpan"}
+              </button>
             </div>
           </form>
         </Modal>
@@ -655,10 +765,22 @@ export default function Products({ mode }: { mode: Mode }) {
               </div>
             </>
           ) : (
-            <p>
-              Sinkronisasi membutuhkan koneksi marketplace. Daftar ini
-              menggunakan data lokal dan tidak mengubah toko asli.
-            </p>
+            <div className="panel-form">
+              <p>
+                Ambil hingga 100 produk langsung dari toko Shopee yang terhubung.
+                Produk akan ditampilkan pada panel ini. Untuk produk tanpa variasi,
+                tombol Simpan ke Shopee mengirim perubahan harga dan stok langsung ke toko.
+              </p>
+              {error && <p role="alert" className="form-error">{error}</p>}
+              <div className="form-actions">
+                <a className="neutral-button" href={shopeeConsoleUrl} target="_blank" rel="noreferrer">
+                  Hubungkan toko
+                </a>
+                <button className="primary" onClick={syncShopeeProducts} disabled={syncing}>
+                  {syncing ? "Menghubungkan…" : "Sinkronkan produk"}
+                </button>
+              </div>
+            </div>
           )}
         </Modal>
       )}

@@ -178,10 +178,13 @@ export const stores = ["A2HShop", "the jago snack & frozen food"];
 export function StoreTabs({
   value,
   onChange,
+  extraStores = [],
 }: {
   value: string;
   onChange: (s: string) => void;
+  extraStores?: string[];
 }) {
+  const storeOptions = [...new Set([...stores, ...extraStores])];
   return (
     <>
       <div className="market-heading">
@@ -189,7 +192,7 @@ export function StoreTabs({
       </div>
       <div className="store-tabs">
         <span>Toko</span>
-        {["Semua", ...stores].map((s) => (
+        {["Semua", ...storeOptions].map((s) => (
           <button
             key={s}
             className={value === s ? "selected" : ""}

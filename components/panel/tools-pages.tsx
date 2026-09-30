@@ -8,7 +8,7 @@ import { Modal, Notice, ProductImage, Search, stores, Switch } from "./ui";
 
 const shopeeConsoleUrl =
   process.env.NEXT_PUBLIC_SHOPEE_CONSOLE_URL ||
-  "https://dasboardmarket.firebaseapp.com/shopee";
+  "https://thejagosidconnect.firebaseapp.com/shopee";
 
 export function Scrape() {
   const [tab, setTab] = useState("Semua");

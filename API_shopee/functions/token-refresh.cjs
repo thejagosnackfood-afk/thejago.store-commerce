@@ -10,7 +10,22 @@ async function refreshShopeeToken(config, baseUrl, old, request = fetch) {
   });
   const token = await response.json();
   if (!response.ok || token.error || !token.access_token || !token.refresh_token || !(Number(token.expire_in) > 0)) {
-    throw new Error('Refresh Shopee gagal; periksa izin aplikasi atau otorisasi ulang jika token telah dicabut.');
+    const code = typeof token.error === 'string' && /^[a-zA-Z0-9_.-]{1,100}$/.test(token.error) ? token.error : 'invalid_refresh_response';
+    const error = new Error(code === 'source_ip_undeclared'
+      ? 'Shopee menolak IP server konektor. Daftarkan IP keluar server di whitelist aplikasi Shopee Open Platform, lalu ulangi sinkronisasi. Login Google tidak perlu diulang.'
+      : 'Refresh token Shopee gagal. Hubungkan ulang toko melalui halaman konektor, lalu ulangi sinkronisasi.');
+    error.code = code;
+    let reason = typeof token.message === 'string' ? token.message : '';
+    for (const secret of [config.partnerKey, old.access_token, old.refresh_token, token.access_token, token.refresh_token]) {
+      if (typeof secret === 'string' && secret) reason = reason.split(secret).join('[redacted]');
+    }
+    error.upstreamReason = reason.slice(0, 400);
+    if (code === 'source_ip_undeclared') {
+      const sourceIp = String(token.message || '').match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0];
+      if (sourceIp && sourceIp.split('.').every(part => Number(part) <= 255)) error.sourceIp = sourceIp;
+    }
+    error.shopeeRefreshError = true;
+    throw error;
   }
   return { ...old, ...token, expired_at: Date.now() + Number(token.expire_in) * 1000 - 60000 };
 }
