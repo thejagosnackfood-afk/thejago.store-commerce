@@ -1,0 +1,59 @@
+<style>
+[hidden]{display:none!important}
+.product-form{display:grid;gap:12px}.product-form label{display:grid;gap:5px}.product-form input,.product-form textarea{font:inherit;padding:10px;border:1px solid #d8e1ea;border-radius:8px;width:100%;box-sizing:border-box}.product-form textarea{min-height:90px}.product-row{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid #d8e1ea;flex-wrap:wrap}button{padding:10px;border:0;border-radius:8px;background:#ee4d2d;color:white;cursor:pointer}button:disabled{opacity:.5;cursor:wait}small{display:block}#preview{white-space:pre-wrap;overflow-wrap:anywhere}#result[role=alert]{color:#991b1b}@media(max-width:600px){body{padding:8px}}
+</style>
+<p><a href="/shopee">Koneksi toko / OAuth</a></p>
+<p>Tambah produk atau ubah judul dan SKU produk tanpa variasi. Harga dan stok produk lama tetap. Tinjau kandidat fuzzy berdasarkan merek, ukuran, isi, dan varian sebelum memilih.</p>
+<div class="card">
+<h2>Produk online</h2><button id="load">Muat produk</button> <button id="next" hidden>Halaman berikutnya</button>
+<label>Cari judul / SKU <input id="search" type="search"></label><div id="products"></div>
+</div>
+<div class="card">
+<h2>Master SKU</h2><p>Impor JSON dengan baris { "name": "Judul produk", "sku": "SKU-MASTER" }. Gunakan ekspor master dari dashboard.</p>
+<input id="master-file" type="file" accept=".json,application/json"><p id="master-status"></p>
+</div>
+<div class="card">
+<h2 id="form-title">Tambah produk</h2><button id="new" type="button">Produk baru</button>
+<form id="form" class="product-form">
+<label>Judul <input name="name" required maxlength="120"></label>
+<label>SKU <input name="sku" required maxlength="100"></label>
+<button id="match" type="button">Cari kandidat master</button><div id="candidates"></div>
+<div id="create-fields" class="product-form">
+<label>Deskripsi <textarea name="description" maxlength="5000"></textarea></label>
+<label>ID kategori Shopee <input name="categoryId" type="number" min="1" step="1"></label>
+<label>Harga (Rp) <input name="price" type="number" min="1" step="0.01"></label>
+<label>Stok <input name="stock" type="number" min="0" step="1" value="0"></label>
+<label>Berat paket (kg) <input name="weight" type="number" min="0.001" step="0.001"></label>
+<label>ID gambar Shopee (pisahkan dengan koma; 1–9 gambar) <input name="imageIds"></label>
+<label>ID logistik Shopee <input name="logisticId" type="number" min="1" step="1"></label>
+<label>Atribut kategori (array JSON, jika diwajibkan kategori) <textarea name="attributeList">[]</textarea></label>
+<label>ID merek (opsional) <input name="brandId" type="number" min="1" step="1"></label>
+<label>Nama merek (jika ID merek diisi) <input name="brandName" maxlength="100"></label>
+<p>Gunakan ID gambar yang telah diunggah ke Shopee dan kategori/logistik yang tersedia untuk toko ini. Produk baru dibuat UNLIST.</p>
+</div>
+<button id="review" type="submit">Tinjau perubahan</button>
+</form>
+<div id="review-box" hidden><h3>Pratinjau</h3><pre id="preview"></pre><button id="send">Kirim ke Shopee</button> <button id="cancel">Kembali edit</button></div>
+</div>
+<p id="result" aria-live="polite"></p>
+<script>
+/* MATCH_MASTER */
+const form = document.getElementById('form');
+const result = document.getElementById('result');
+let products = [], masters = [], editing = null, pending = null, nextOffset = null, busy = false;
+function message(value, error = false) { result.textContent = value; result.setAttribute('role', error ? 'alert' : 'status'); }
+function lock(value) { busy = value; document.querySelectorAll('button').forEach(b => { b.disabled = value; }); if (!value) document.querySelectorAll('#candidates button').forEach(b => { b.disabled = b.dataset.conflict === 'true'; }); }
+async function request(url, options) { const response = await fetch(url, {credentials:'same-origin', ...options, headers:{Accept:'application/json', 'Content-Type':'application/json', ...options?.headers}}); const data = await response.json(); if (!response.ok || data.error || data.ok === false) throw new Error(data.error || 'Permintaan ditolak.'); return data; }
+function renderRows() {
+ const target = document.getElementById('products'); target.replaceChildren(); const q = document.getElementById('search').value.toLowerCase();
+ products.filter(p => `${p.name} ${p.sku}`.toLowerCase().includes(q)).forEach(p => { const row = document.createElement('div'); row.className='product-row'; const label = document.createElement('span'); label.textContent=p.name; const detail=document.createElement('small'); detail.textContent=`${p.sku || '(SKU kosong)'} · ${p.status} · ID ${p.itemId}`; label.append(detail); const button=document.createElement('button'); button.textContent=p.hasModel?'Produk bervariasi':'Edit judul / SKU'; button.disabled=p.hasModel || busy; button.onclick=()=>open(p); row.append(label,button); target.append(row); });
+}
+function open(product) { editing = product ? {...product} : null; pending=null; form.reset(); form.elements.name.value=product?.name || ''; form.elements.sku.value=product?.sku || ''; document.getElementById('create-fields').hidden=Boolean(product); document.getElementById('form-title').textContent=product?'Edit produk':'Tambah produk'; document.getElementById('review-box').hidden=true; document.getElementById('candidates').replaceChildren(); form.hidden=false; }
+async function load(offset = 0) { lock(true); try { const data=await request(`/shopee/api/products?offset=${offset}&page_size=100&item_status=NORMAL,UNLIST`); if (!Array.isArray(data.products)) throw new Error('Daftar produk tidak valid.'); products=data.products; nextOffset=data.hasNextPage ? data.nextOffset : null; document.getElementById('next').hidden=nextOffset===null; message(`${products.length} produk dimuat dari toko ${data.shopId}.`); } catch(e){message(e.message,true);} finally {lock(false);renderRows();} }
+document.getElementById('load').onclick=()=>load(); document.getElementById('next').onclick=()=>{if(nextOffset!==null)load(nextOffset);}; document.getElementById('search').oninput=renderRows; document.getElementById('new').onclick=()=>open(null);
+document.getElementById('master-file').onchange=async event=>{try {const file=event.target.files[0]; if(!file)return; if(file.size>5000000)throw new Error('File master maksimal 5 MB.');const rows=JSON.parse(await file.text());if(!Array.isArray(rows)||!rows.length||rows.length>20000||rows.some(r=>!r||typeof r.name!=='string'||!r.name.trim()||typeof r.sku!=='string'||!r.sku.trim()))throw new Error('Master harus berupa array name dan sku, maksimal 20.000 baris.'); masters=rows;document.getElementById('master-status').textContent=`${masters.length} baris master tersedia.`;document.getElementById('candidates').replaceChildren();}catch(e){message(e.message,true);}};
+document.getElementById('match').onclick=()=>{const box=document.getElementById('candidates');box.replaceChildren();if(!masters.length){message('Impor master SKU terlebih dahulu.',true);return;}matchMaster({name:form.elements.name.value,sku:form.elements.sku.value},masters).forEach(candidate=>{const row=document.createElement('div');row.className='product-row';const label=document.createElement('span');label.textContent=`${candidate.score}% · ${candidate.method} · ${candidate.name} · ${candidate.sku}${candidate.conflict?' · Ukuran/isi berbeda':''}`;const button=document.createElement('button');button.textContent='Gunakan kandidat';button.disabled=candidate.conflict;button.dataset.conflict=String(candidate.conflict);button.onclick=()=>{form.elements.name.value=candidate.name;form.elements.sku.value=candidate.sku;message('Kandidat dipilih. Periksa merek, ukuran, isi, dan varian sebelum mengirim.');};row.append(label,button);box.append(row);});};
+form.onsubmit=event=>{event.preventDefault();try{const values=Object.fromEntries(new FormData(form));const body={name:values.name.trim(),sku:values.sku.trim()};if(editing){body.itemId=editing.itemId;body.before={name:editing.name,sku:editing.sku};}else{for(const key of ['categoryId','price','stock','weight','logisticId']){if(!String(values[key]).trim())throw new Error(`${key} wajib diisi.`);body[key]=Number(values[key]);}body.description=values.description;body.imageIds=values.imageIds.split(',').map(v=>v.trim()).filter(Boolean);body.attributeList=JSON.parse(values.attributeList||'[]');if(values.brandId){body.brandId=Number(values.brandId);body.brandName=values.brandName;}}pending={action:editing?'edit':'create',body};document.getElementById('preview').textContent=JSON.stringify({sebelum:editing?{name:editing.name,sku:editing.sku}:null,sesudah:body,statusProdukBaru:editing?undefined:'UNLIST'},null,2);form.hidden=true;document.getElementById('review-box').hidden=false;message('Periksa pratinjau sebelum mengirim.');}catch(e){message(e.message,true);}};
+document.getElementById('cancel').onclick=()=>{pending=null;form.hidden=false;document.getElementById('review-box').hidden=true;};
+document.getElementById('send').onclick=async()=>{if(busy||!pending)return;lock(true);try{const data=await request(`/shopee/api/products/${pending.action==='create'?'create':'edit'}`,{method:'POST',body:JSON.stringify(pending.body)});pending=null;document.getElementById('review-box').hidden=true;form.hidden=false;message(`Berhasil: produk ${data.itemId}. ${data.status==='UNLIST'?'Produk baru belum ditayangkan.':'Judul dan SKU terverifikasi.'}${data.warning?' Peringatan: '+JSON.stringify(data.warning):''}`);}catch(e){pending=null;document.getElementById('review-box').hidden=true;form.hidden=false;message(e.message+' Muat ulang dan periksa toko sebelum mengirim ulang.',true);}finally{lock(false);renderRows();}};
+</script>
