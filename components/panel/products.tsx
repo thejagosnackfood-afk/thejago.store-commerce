@@ -219,6 +219,16 @@ export default function Products({ mode }: { mode: Mode }) {
           }
         />
         <div className="toolbar-actions">
+          {mode !== "stock" && <>
+            <a className="neutral-button" href={`${process.env.NEXT_PUBLIC_SHOPEE_CONSOLE_URL || "https://shopee-api-production-676a.up.railway.app/shopee"}/products`} target="_blank" rel="noopener noreferrer">TAMBAH / EDIT SHOPEE</a>
+            <button className="outline" onClick={() => {
+              const blob = new Blob([JSON.stringify(state.stocks.map(({ name, sku, variant }) => ({ name, sku, variant })))], { type: "application/json" });
+              const url = URL.createObjectURL(blob); const a = document.createElement("a");
+              a.href = url; a.download = "master-sku.json"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+              setMessage("Master SKU diekspor untuk pencocokan di modul Shopee.");
+            }}>EXPORT MASTER SKU</button>
+          </>}
+
           {mode === "stock" ? (
             <>
               <button className="outline" onClick={exportStock}>

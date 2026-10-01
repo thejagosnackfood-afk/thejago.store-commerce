@@ -1,3 +1,4 @@
+const { writeProduct, renderProductModule } = require('./product-module.cjs');
 const crypto = require('crypto');
 const functions = require('firebase-functions');
 const { LocalTokenStore } = require('./local-token-store.cjs');
@@ -600,6 +601,7 @@ function renderHome(res, model) {
       <a class="button" href="/shopee/api/shopee-auth" target="_blank" rel="noopener" style="background:#111827;">View Auth JSON</a>
       <a class="button" href="/shopee/api/shopee-token-status" target="_blank" rel="noopener" style="background:#374151;">Token Status</a>
     </div>
+    <a class="button" href="/shopee/products">Modul Produk: Tambah / Edit</a>
     <form method="post" action="/shopee/api/logout"><button type="submit">Hapus sesi Shopee</button></form>
     <div class="card">
       <span class="label">API Helper Endpoints</span>
@@ -930,12 +932,14 @@ async function handleProducts(req, res) {
       item_status: itemStatus,
   });
 
+  if (data.error || !data.response) return renderJson(res, 502, { ok: false, error: data.message || data.error || 'Gagal membaca produk Shopee.' });
   const itemRows = data.response?.item ?? [];
   const baseRows = [];
   for (let start = 0; start < itemRows.length; start += 50) {
     const itemIds = itemRows.slice(start, start + 50).map((item) => item.item_id);
     if (!itemIds.length) continue;
     const base = await sdk.product.getItemBaseInfo({ item_id_list: itemIds });
+    if (base.error || !base.response) return renderJson(res, 502, { ok: false, error: base.message || base.error || 'Gagal membaca detail produk Shopee.' });
     baseRows.push(...(base.response?.item_list ?? []));
   }
   const baseById = new Map(baseRows.map((item) => [String(item.item_id), item]));
@@ -1218,6 +1222,24 @@ async function handleRequest(req, res) {
 
     if (requestPath === '/api/products') {
       return await handleProducts(req, res);
+    }
+
+    if (requestPath === '/products' && req.method === 'GET') {
+      return renderProductModule(renderPage, res);
+    }
+    if (requestPath === '/api/products/create' || requestPath === '/api/products/edit') {
+      const expectedOrigin = new URL(loadShopeeConfig().redirectUrl).origin;
+      if (req.method !== 'POST' || req.headers.origin !== expectedOrigin) {
+        return renderJson(res, 403, { ok: false, error: 'Gunakan POST dari halaman konektor Shopee.' });
+      }
+      const { sdk, token } = await createSdkContext(req, res);
+      if (!token) return renderJson(res, 401, { ok: false, error: 'Hubungkan toko melalui OAuth terlebih dahulu.' });
+      try {
+        const result = await writeProduct({ sdk, action: requestPath.endsWith('/create') ? 'create' : 'edit', body: req.body || {} });
+        return renderJson(res, 200, result);
+      } catch (error) {
+        return renderJson(res, error.status || 502, { ok: false, error: error.message });
+      }
     }
 
     if (requestPath === '/api/products/update') {
