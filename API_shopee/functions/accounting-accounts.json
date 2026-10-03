@@ -1,0 +1,97 @@
+[
+  {
+    "code": "1100",
+    "name": "Kas",
+    "type": "asset"
+  },
+  {
+    "code": "1110",
+    "name": "Bank",
+    "type": "asset"
+  },
+  {
+    "code": "1120",
+    "name": "Saldo Shopee",
+    "type": "asset"
+  },
+  {
+    "code": "1130",
+    "name": "Piutang usaha",
+    "type": "asset"
+  },
+  {
+    "code": "1140",
+    "name": "Persediaan barang",
+    "type": "asset"
+  },
+  {
+    "code": "1190",
+    "name": "Selisih escrow belum dialokasikan",
+    "type": "asset"
+  },
+  {
+    "code": "2100",
+    "name": "Utang usaha",
+    "type": "liability"
+  },
+  {
+    "code": "3100",
+    "name": "Modal pemilik",
+    "type": "equity"
+  },
+  {
+    "code": "3200",
+    "name": "Prive",
+    "type": "equity"
+  },
+  {
+    "code": "4100",
+    "name": "Penjualan",
+    "type": "income"
+  },
+  {
+    "code": "4190",
+    "name": "Retur penjualan",
+    "type": "income"
+  },
+  {
+    "code": "4200",
+    "name": "Pendapatan lain",
+    "type": "income"
+  },
+  {
+    "code": "5100",
+    "name": "Harga pokok penjualan",
+    "type": "expense"
+  },
+  {
+    "code": "5200",
+    "name": "Komisi Shopee",
+    "type": "expense"
+  },
+  {
+    "code": "5210",
+    "name": "Layanan Shopee",
+    "type": "expense"
+  },
+  {
+    "code": "5220",
+    "name": "Transaksi Shopee",
+    "type": "expense"
+  },
+  {
+    "code": "5230",
+    "name": "Afiliasi Shopee",
+    "type": "expense"
+  },
+  {
+    "code": "5240",
+    "name": "Biaya Shopee lainnya",
+    "type": "expense"
+  },
+  {
+    "code": "5300",
+    "name": "Beban operasional",
+    "type": "expense"
+  }
+]

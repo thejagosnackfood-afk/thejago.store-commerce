@@ -1,7 +1,9 @@
 process.env.SHOPEE_LOCAL_MODE = 'false';
 
 const express = require('express');
-const { shopeeConsole } = require('./index');
+const { shopeeConsole, railwayHandlers } = require('./index');
+const createRoutes = require('./routes/index.cjs');
+const { createSecurityGateway } = require('./gateway/security.cjs');
 
 const required = [
   'SHOPEE_PARTNER_ID',
@@ -21,8 +23,10 @@ if (process.env.SHOPEE_TOKEN_STORAGE !== 'firestore') {
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
+app.use(createSecurityGateway());
 app.use(express.json({ limit: '512kb' }));
 app.get('/', (_req, res) => res.redirect('/shopee'));
+app.use('/shopee', createRoutes(railwayHandlers));
 app.use('/shopee', shopeeConsole);
 
 const port = Number(process.env.PORT || 3000);
@@ -30,6 +34,7 @@ app.listen(port, '0.0.0.0', () => {
   console.log(`Shopee connector listening on port ${port}`);
   require('./dashboard-api.cjs').startDashboardSync();
   const dashboard = require('./dashboard-api.cjs');
+  require('./accounting-shopee.cjs').startWorker(dashboard.storeContext, dashboard.shopContext);
   require('./master-stock.cjs').startMasterWorker(dashboard.storeContext, dashboard.shopContext);
   void require('./dashboard-api.cjs').checkDashboardConnection();
 });

@@ -5,6 +5,7 @@ const LOCAL_MODE = process.env.SHOPEE_LOCAL_MODE === 'true';
 const CLOUD_MODE = process.env.SHOPEE_TOKEN_STORAGE === 'firestore' && !LOCAL_MODE;
 const { createCloudTokenStore } = require('./cloud-token-store.cjs');
 const { refreshShopeeToken } = require('./token-refresh.cjs');
+const { shopeeRejectError } = require('./dashboard-api.cjs');
 
 const DEFAULT_SHOPEE_REGION = 'GLOBAL';
 const SUPPORTED_REGIONS = new Set(['GLOBAL', 'CHINA', 'BRAZIL', 'TEST_GLOBAL', 'TEST_CHINA']);
@@ -410,6 +411,23 @@ function escapeHtml(value) {
 
 function renderJson(res, statusCode, payload) {
   res.status(statusCode).set('Content-Type', 'application/json; charset=UTF-8').send(payload);
+}
+
+async function sdkResponseData(response) {
+  if (!response) return {};
+  if (typeof response.json === 'function') {
+    try { return await response.json(); } catch { return {}; }
+  }
+  return response.data || {};
+}
+
+async function shopeeSdkCall(config, token, call) {
+  try { return await call(); }
+  catch (error) {
+    const status = Number(error?.response?.status || error?.status || 0);
+    if (status === 403) throw shopeeRejectError({ status }, await sdkResponseData(error.response), [config.partnerKey, token?.access_token, token?.refresh_token]);
+    throw error;
+  }
 }
 
 function renderPage(res, statusCode, title, body) {
@@ -819,7 +837,13 @@ async function handleCallback(req, res) {
   );
   const tokenStorage = new RequestTokenStorage(req, res, config);
   const sdk = await createShopeeSdk(config, tokenStorage, { shop_id: shopId, merchant_id: merchantId });
-  const token = await sdk.authenticateWithCode(code, shopId, merchantId);
+  const rawToken = await sdk.auth.getAccessToken(code, shopId, merchantId);
+  const token = {
+    ...rawToken,
+    shop_id: rawToken?.shop_id ?? shopId ?? null,
+    merchant_id: rawToken?.merchant_id ?? merchantId ?? null,
+  };
+  await tokenStorage.store(token);
 
   clearCookie(res, STATE_COOKIE);
 
@@ -863,9 +887,9 @@ async function handleLogout(req, res) {
 }
 
 async function handleShopInfo(req, res) {
-  const { sdk, token, tokenSource } = await createSdkContext(req, res);
+  const { config, sdk, token, tokenSource } = await createSdkContext(req, res);
   requireToken(token);
-  const data = await sdk.shop.getShopInfo();
+  const data = await shopeeSdkCall(config, token, () => sdk.shop.getShopInfo());
   return renderJson(res, 200, {
     tokenSource,
     shopId: token.shop_id ?? null,
@@ -874,46 +898,23 @@ async function handleShopInfo(req, res) {
 }
 
 async function handleOrders(req, res) {
-  const { sdk, token, tokenSource } = await createSdkContext(req, res);
-  requireToken(token);
-  const now = Math.floor(Date.now() / 1000);
-  const defaultTimeFrom = now - 24 * 60 * 60;
-  const timeFrom = parseOptionalInteger(req.query && req.query.time_from, 'time_from') ?? defaultTimeFrom;
-  const timeTo = parseOptionalInteger(req.query && req.query.time_to, 'time_to') ?? now;
-  const pageSize = clamp(parseOptionalInteger(req.query && req.query.page_size, 'page_size') ?? 20, 1, 100);
-  const cursor = req.query && typeof req.query.cursor === 'string' ? req.query.cursor.trim() : undefined;
-  const orderStatus = req.query && typeof req.query.order_status === 'string' ? req.query.order_status.trim() : undefined;
-  const responseOptionalFields =
-    req.query && typeof req.query.response_optional_fields === 'string'
-      ? req.query.response_optional_fields.trim()
-      : undefined;
-
-  const data = await sdk.order.getOrderList({
-    time_range_field: 'create_time',
-    time_from: timeFrom,
-    time_to: timeTo,
-    page_size: pageSize,
-    cursor,
-    order_status: orderStatus,
-    response_optional_fields: responseOptionalFields,
+  const payload = await require('./services/order.service.cjs').listOrders(req, res, {
+    createContext: createSdkContext,
+    sdkCall: shopeeSdkCall,
   });
+  return renderJson(res, 200, payload);
+}
 
-  return renderJson(res, 200, {
-    tokenSource,
-    shopId: token.shop_id ?? null,
-    query: {
-      time_from: timeFrom,
-      time_to: timeTo,
-      page_size: pageSize,
-      cursor: cursor || null,
-      order_status: orderStatus || null,
-    },
-    data,
+async function handleOrderSearch(req, res) {
+  const payload = await require('./services/order.service.cjs').searchOrders(req, res, {
+    createContext: createSdkContext,
+    sdkCall: shopeeSdkCall,
   });
+  return renderJson(res, 200, payload);
 }
 
 async function handleProducts(req, res) {
-  const { sdk, token, tokenSource } = await createSdkContext(req, res);
+  const { config, sdk, token, tokenSource } = await createSdkContext(req, res);
   requireToken(token);
   const offset = clamp(parseOptionalInteger(req.query && req.query.offset, 'offset') ?? 0, 0, Number.MAX_SAFE_INTEGER);
   const pageSize = clamp(parseOptionalInteger(req.query && req.query.page_size, 'page_size') ?? 20, 1, 100);
@@ -926,20 +927,20 @@ async function handleProducts(req, res) {
           .map((value) => value.trim())
           .filter(Boolean)
       : ['NORMAL'];
-  const data = await sdk.product.getItemList({
+  const data = await shopeeSdkCall(config, token, () => sdk.product.getItemList({
     offset,
     page_size: pageSize,
     update_time_from: updateTimeFrom,
     update_time_to: updateTimeTo,
       item_status: itemStatus,
-  });
+  }));
 
   const itemRows = data.response?.item ?? [];
   const baseRows = [];
   for (let start = 0; start < itemRows.length; start += 50) {
     const itemIds = itemRows.slice(start, start + 50).map((item) => item.item_id);
     if (!itemIds.length) continue;
-    const base = await sdk.product.getItemBaseInfo({ item_id_list: itemIds });
+    const base = await shopeeSdkCall(config, token, () => sdk.product.getItemBaseInfo({ item_id_list: itemIds }));
     baseRows.push(...(base.response?.item_list ?? []));
   }
   const baseById = new Map(baseRows.map((item) => [String(item.item_id), item]));
@@ -1039,21 +1040,21 @@ async function handleUpdateProduct(req, res) {
     return renderJson(res, 400, { ok: false, error: 'ID produk, harga positif, dan stok non-negatif wajib diisi.' });
   }
 
-  const baseInfo = await sdk.product.getItemBaseInfo({ item_id_list: [itemId] });
+  const baseInfo = await shopeeSdkCall(config, token, () => sdk.product.getItemBaseInfo({ item_id_list: [itemId] }));
   const item = baseInfo.response?.item_list?.[0];
   if (!item) return renderJson(res, 404, { ok: false, error: 'Produk tidak ditemukan di toko Shopee.' });
   if (item.has_model) return renderJson(res, 409, { ok: false, error: 'Produk bervariasi belum bisa diedit dari panel. Edit variasinya langsung di Shopee.' });
 
   let locationId = item.stock_info_v2?.seller_stock?.find((entry) => entry.location_id)?.location_id;
   if (!locationId) {
-    const warehouses = await sdk.shop.getWarehouseDetail({ warehouse_type: 1 });
+    const warehouses = await shopeeSdkCall(config, token, () => sdk.shop.getWarehouseDetail({ warehouse_type: 1 }));
     locationId = warehouses.response?.find((entry) => entry.location_id)?.location_id;
   }
   if (!locationId) return renderJson(res, 409, { ok: false, error: 'Lokasi gudang Shopee tidak ditemukan; stok tidak diubah.' });
 
   const [priceResult, stockResult] = await Promise.all([
-    sdk.product.updatePrice({ item_id: itemId, price_list: [{ model_id: 0, original_price: price }] }),
-    sdk.product.updateStock({ item_id: itemId, stock_list: [{ model_id: 0, seller_stock: [{ location_id: locationId, stock }] }] }),
+    shopeeSdkCall(config, token, () => sdk.product.updatePrice({ item_id: itemId, price_list: [{ model_id: 0, original_price: price }] })),
+    shopeeSdkCall(config, token, () => sdk.product.updateStock({ item_id: itemId, stock_list: [{ model_id: 0, seller_stock: [{ location_id: locationId, stock }] }] })),
   ]);
   const priceOk = !priceResult.error && (priceResult.response?.success_list || []).some((entry) => entry.model_id === 0);
   const stockOk = !stockResult.error && (stockResult.response?.success_list || []).some((entry) => entry.model_id === 0);
@@ -1069,9 +1070,9 @@ async function handleUpdateProduct(req, res) {
 }
 
 async function handleLogisticsChannels(req, res) {
-  const { sdk, token, tokenSource } = await createSdkContext(req, res);
+  const { config, sdk, token, tokenSource } = await createSdkContext(req, res);
   requireToken(token);
-  const data = await sdk.logistics.getChannelList();
+  const data = await shopeeSdkCall(config, token, () => sdk.logistics.getChannelList());
   return renderJson(res, 200, {
     tokenSource,
     shopId: token.shop_id ?? null,
@@ -1080,7 +1081,7 @@ async function handleLogisticsChannels(req, res) {
 }
 
 async function handleAddSampleProducts(req, res) {
-  const { sdk, token, tokenSource } = await createSdkContext(req, res);
+  const { config, sdk, token, tokenSource } = await createSdkContext(req, res);
   requireToken(token);
 
   const confirm = req.query && typeof req.query.confirm === 'string' ? req.query.confirm.trim() : '';
@@ -1112,7 +1113,7 @@ async function handleAddSampleProducts(req, res) {
   let selectedLogisticId = logisticId;
   let logisticsSource = 'query';
   if (!selectedLogisticId) {
-    const channels = await sdk.logistics.getChannelList();
+    const channels = await shopeeSdkCall(config, token, () => sdk.logistics.getChannelList());
     const enabledChannel = channels &&
       channels.response &&
       Array.isArray(channels.response.logistics_channel_list)
@@ -1142,7 +1143,7 @@ async function handleAddSampleProducts(req, res) {
   for (let index = 1; index <= count; index += 1) {
     const payload = buildSampleProduct(index, options);
     try {
-      const data = await sdk.product.addItem(payload);
+      const data = await shopeeSdkCall(config, token, () => sdk.product.addItem(payload));
       results.push({
         ok: true,
         index,
@@ -1193,12 +1194,33 @@ function setupGuide() {
   <a href="/shopee/api/shop/info">Shop Info</a></div>`;
 }
 
+function prepareConsoleRequest(req, res) {
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  const incoming = parseCookies(req);
+  res.shopeeCookieBundle = Object.fromEntries([STATE_COOKIE, SESSION_COOKIE].filter(name => incoming[name]).map(name => [name, incoming[name]]));
+}
+
+async function handleLogoutRequest(req, res) {
+  const expectedOrigin = new URL(loadShopeeConfig().redirectUrl).origin;
+  if (req.method !== 'POST' || req.headers.origin !== expectedOrigin) {
+    return renderJson(res, 403, { error: 'Logout harus POST dari halaman konektor.' });
+  }
+  return handleLogout(req, res);
+}
+
+function handleConsoleError(req, res, error) {
+  const message = error && error.message ? error.message : 'Terjadi kesalahan tidak dikenal.';
+  const status = error && error.expose === true && [400, 401, 405].includes(error.status) ? error.status : 500;
+  if ((req.accepts && req.accepts('json')) || String(req.headers.accept || '').includes('application/json')) {
+    return renderJson(res, status, { error: `Shopee API Console error: ${message}` });
+  }
+  return renderError(res, status, `Shopee API Console error: ${message}`);
+}
+
 async function handleRequest(req, res) {
   try {
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-    const incoming = parseCookies(req);
-    res.shopeeCookieBundle = Object.fromEntries([STATE_COOKIE, SESSION_COOKIE].filter(name => incoming[name]).map(name => [name, incoming[name]]));
+    prepareConsoleRequest(req, res);
     const requestPath = normalizeRequestPath(req);
     if (requestPath.startsWith('/api/dashboard/')) {
       return await require('./dashboard-api.cjs').handleDashboard(req, res, requestPath.slice('/api/dashboard'.length));
@@ -1221,6 +1243,10 @@ async function handleRequest(req, res) {
 
     if (requestPath === '/api/orders') {
       return await handleOrders(req, res);
+    }
+
+    if (requestPath === '/api/orders/search') {
+      return await handleOrderSearch(req, res);
     }
 
     if (requestPath === '/api/products') {
@@ -1247,13 +1273,7 @@ async function handleRequest(req, res) {
       return await handleCallback(req, res);
     }
 
-    if (requestPath === '/api/logout') {
-      const expectedOrigin = new URL(loadShopeeConfig().redirectUrl).origin;
-      if (req.method !== 'POST' || req.headers.origin !== expectedOrigin) {
-        return renderJson(res, 403, { error: 'Logout harus POST dari halaman konektor.' });
-      }
-      return await handleLogout(req, res);
-    }
+    if (requestPath === '/api/logout') return await handleLogoutRequest(req, res);
 
     const { config, authUrl, tokenStatus } = await buildAuthModel(req, res);
     return renderHome(res, {
@@ -1264,15 +1284,27 @@ async function handleRequest(req, res) {
       tokenSource: tokenStatus.source,
     });
   } catch (error) {
-    const message = error && error.message ? error.message : 'Terjadi kesalahan tidak dikenal.';
-
-    if ((req.accepts && req.accepts('json')) || String(req.headers.accept || '').includes('application/json')) {
-      return renderJson(res, 500, { error: `Shopee API Console error: ${message}` });
-    }
-
-    return renderError(res, 500, `Shopee API Console error: ${message}`);
+    return handleConsoleError(req, res, error);
   }
 }
+
+exports.railwayHandlers = {
+  prepareRequest: prepareConsoleRequest,
+  handleError: handleConsoleError,
+  localMode: LOCAL_MODE,
+  auth: handleAuthApi,
+  tokenStatus: handleTokenStatus,
+  callback: handleCallback,
+  logout: handleLogoutRequest,
+  orders: handleOrders,
+  orderSearch: handleOrderSearch,
+  products: handleProducts,
+  updateProduct: handleUpdateProduct,
+  syncProductsPage: handleProductSyncPage,
+  addSampleProducts: handleAddSampleProducts,
+  shopInfo: handleShopInfo,
+  logisticsChannels: handleLogisticsChannels,
+};
 
 exports.shopeeConsole = functions.https.onRequest(
   CLOUD_MODE ? { serviceAccount: 'shopee-connector@thejagosnackfood-420.iam.gserviceaccount.com' } : {},
@@ -1289,4 +1321,13 @@ exports.shopeeTokenRefresh = require('firebase-functions/v2/scheduler').onSchedu
   const result = await store.refreshDue(old => refreshShopeeToken(config, SHOPEE_BASE_URLS[config.region], old));
   console.log('Shopee scheduled refresh', result);
   if (result.failed) throw new Error('Sebagian token gagal diperbarui; akan dicoba lagi pada jadwal berikutnya.');
+});
+
+exports.shopeeDailyBoostRotation = require('firebase-functions/v2/scheduler').onSchedule({
+  schedule: 'every day 01:15', timeZone: 'Asia/Jakarta', region: 'us-central1',
+  serviceAccount: 'shopee-connector@thejagosnackfood-420.iam.gserviceaccount.com',
+  timeoutSeconds: 540, maxInstances: 1, concurrency: 1,
+}, async () => {
+  const result = await require('./boost-rotation.cjs').runDailyBoostRotation();
+  console.log('Shopee daily boost rotation', result);
 });
